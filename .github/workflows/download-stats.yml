@@ -1,9 +1,9 @@
 name: Record release download counts (daily)
 
 on:
-  schedule:
-    - cron: "12 2 * * *"   # daily at 02:12 UTC (~04:12 Brussels in summer)
   workflow_dispatch: {}
+  schedule:
+    - cron: "12 2 * * *"   # daily at 02:12 UTC
 
 permissions:
   contents: write
@@ -11,47 +11,58 @@ permissions:
 jobs:
   record:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        repo:
-          - soundshow-app/soundshow-downloads
-          - soundshow-app/soundshow-remote-downloads
+    env:
+      REPO: soundshow-app/soundshow-downloads   # or use: ${{ github.repository }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Collect counts for ${{ matrix.repo }}
+      - name: Collect counts
+        shell: bash
         env:
-          REPO: ${{ matrix.repo }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -e
+          set -euo pipefail
           date_utc=$(date -u +%F)
           mkdir -p stats
-          # File per repo (e.g. soundshow-downloads.csv)
-          repo_file="stats/$(echo "$REPO" | cut -d/ -f2).csv"
-          # Header once
+          repo_file="stats/${REPO#*/}.csv"
           if [ ! -s "$repo_file" ]; then
             echo "date,tag,asset,download_count" > "$repo_file"
           fi
 
-          # Fetch all releases (first 100 is plenty for most projects)
-          curl -s -H "Accept: application/vnd.github+json" \
-               -H "X-GitHub-Api-Version: 2022-11-28" \
-               -H "Authorization: Bearer $GH_TOKEN" \
-               "https://api.github.com/repos/$REPO/releases?per_page=100" > releases.json
+          # Call API and capture HTTP status
+          http_code=$(curl -sS -w "%{http_code}" -o releases.json \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/$REPO/releases?per_page=100")
 
-          # Append one row per asset of each release
+          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            echo "GitHub API HTTP $http_code"
+            cat releases.json
+            exit 1
+          fi
+
+          # Fail if the payload isn't an array (e.g., Not Found / rate-limit)
+          if jq -e 'type != "array"' releases.json >/dev/null; then
+            echo "Unexpected API response (not an array):"
+            cat releases.json
+            exit 1
+          fi
+
+          # Append one row per asset
           jq -r --arg d "$date_utc" '
-            .[] | .tag_name as $tag
-            | .assets[]
-            | [$d, $tag, .name, (.download_count // 0)]
+            .[] as $r
+            | ($r.assets // [])[]
+            | [$d, ($r.tag_name // ""), .name, (.download_count // 0)]
             | @csv
           ' releases.json >> "$repo_file"
 
-      - name: Commit stats (if changed)
+      - name: Commit stats
+        shell: bash
         run: |
           git config user.name  "github-actions"
           git config user.email "actions@users.noreply.github.com"
           git add stats/*.csv || true
-          git commit -m "stats: $(date -u +%F)" || echo "No changes"
+          git commit -m "stats: $(date -u +%F)" || exit 0
           git push
