@@ -12,7 +12,7 @@ jobs:
   record:
     runs-on: ubuntu-latest
     env:
-      REPO: soundshow-app/soundshow-downloads   # or use: ${{ github.repository }}
+      REPO: soundshow-app/soundshow-downloads   # <- verify THIS exists & is public, with at least 1 published release
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,27 +30,30 @@ jobs:
             echo "date,tag,asset,download_count" > "$repo_file"
           fi
 
-          # Call API and capture HTTP status
+          # --- Call API and capture HTTP status (unauthenticated to avoid any token-scope surprises) ---
           http_code=$(curl -sS -w "%{http_code}" -o releases.json \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            -H "Authorization: Bearer $GH_TOKEN" \
             "https://api.github.com/repos/$REPO/releases?per_page=100")
 
+          echo "HTTP $http_code from API"
+          # Quick peek for debugging
+          printf 'First 200 bytes of payload:\n'; head -c 200 releases.json || true; printf '\n---\n'
+
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
-            echo "GitHub API HTTP $http_code"
+            echo "GitHub API returned HTTP $http_code:"
             cat releases.json
             exit 1
           fi
 
-          # Fail if the payload isn't an array (e.g., Not Found / rate-limit)
+          # Ensure payload is an array ([] if no releases)
           if jq -e 'type != "array"' releases.json >/dev/null; then
-            echo "Unexpected API response (not an array):"
+            echo "Unexpected API response (not an array). Full body:"
             cat releases.json
             exit 1
           fi
 
-          # Append one row per asset
+          # Append one row per asset (safe even if array is empty)
           jq -r --arg d "$date_utc" '
             .[] as $r
             | ($r.assets // [])[]
