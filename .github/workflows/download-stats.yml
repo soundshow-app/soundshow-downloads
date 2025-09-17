@@ -14,8 +14,8 @@ jobs:
     strategy:
       matrix:
         repo:
-          - sound-show-app/soundshow-downloads
-          - sound-show-app/soundshow-remote-downloads
+          - soundshow-app/soundshow-downloads
+          - soundshow-app/soundshow-remote-downloads
     steps:
       - uses: actions/checkout@v4
 
